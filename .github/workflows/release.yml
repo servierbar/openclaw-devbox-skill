@@ -12,11 +12,11 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: ghcr.io/servierbar/openclaw-devbox
 
 jobs:
   release:
-    name: Semantic Release & Docker Build
+    name: Semantic Release
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -33,54 +33,41 @@ jobs:
         run: npm install -g semantic-release @semantic-release/commit-analyzer @semantic-release/release-notes-generator @semantic-release/github
 
       - name: Run semantic-release
-        id: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          OUTPUT=$(npx semantic-release 2>&1) || true
-          echo "$OUTPUT"
-          # Extract new version if released
-          NEW_VERSION=$(echo "$OUTPUT" | grep -oP 'Published release \K[0-9]+\.[0-9]+\.[0-9]+' || true)
-          if [ -n "$NEW_VERSION" ]; then
-            echo "new_release=true" >> "$GITHUB_OUTPUT"
-            echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-          else
-            echo "new_release=false" >> "$GITHUB_OUTPUT"
-          fi
+        run: npx semantic-release
+
+  docker:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    needs: release
+    # Only build when Dockerfile or entrypoint changed
+    if: >-
+      contains(join(github.event.commits.*.modified, ','), 'scripts/Dockerfile') ||
+      contains(join(github.event.commits.*.modified, ','), 'scripts/entrypoint.sh') ||
+      contains(join(github.event.commits.*.added, ','), 'scripts/Dockerfile') ||
+      contains(join(github.event.commits.*.added, ','), 'scripts/entrypoint.sh')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        if: steps.release.outputs.new_release == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        if: steps.release.outputs.new_release == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        if: steps.release.outputs.new_release == 'true'
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=semver,pattern={{version}},value=v${{ steps.release.outputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=v${{ steps.release.outputs.version }}
-            type=semver,pattern={{major}},value=v${{ steps.release.outputs.version }}
-            type=raw,value=latest
-
       - name: Build & push Docker image
-        if: steps.release.outputs.new_release == 'true'
         uses: docker/build-push-action@v6
         with:
           context: scripts
           file: scripts/Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64
